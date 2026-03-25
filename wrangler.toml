@@ -12,3 +12,8 @@ preview_bucket_name = "dmarc-reports-open" # Set this to your preview R2 bucket 
 [[analytics_engine_datasets]]
 binding = "DMARC_ANALYTICS"
 dataset = "dmarc_reports"
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+persist = false
