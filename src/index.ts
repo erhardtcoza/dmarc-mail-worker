@@ -1,9 +1,7 @@
 import * as PostalMime from 'postal-mime'
 import * as mimeDb from 'mime-db'
-
 import * as unzipit from 'unzipit'
 import * as pako from 'pako'
-
 import { XMLParser } from 'fast-xml-parser'
 
 import {
@@ -22,22 +20,18 @@ export default {
   },
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function handleEmail(message: EmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
   const parser = new PostalMime.default()
 
-  // parse email content
   const rawEmail = new Response(message.raw)
-
   const email = await parser.parse(await rawEmail.arrayBuffer())
 
-  // get attachment
-  if (email.attachments === null || email.attachments.length === 0) {
-    throw new Error('no attachments')
+  if (!email.attachments || email.attachments.length === 0) {
+    throw new Error('no attachments found')
   }
+
   const attachment = email.attachments[0]
 
-  // save on R2
   if (env.R2_BUCKET) {
     const date = new Date()
     await env.R2_BUCKET.put(
@@ -46,19 +40,17 @@ async function handleEmail(message: EmailMessage, env: Env, ctx: ExecutionContex
     )
   }
 
-  // get xml
   const reportJSON = await getDMARCReportXML(attachment)
+  const reportRows = getReportRows(reportJSON)
 
-  // get report
-  const report = getReportRows(reportJSON)
-
-  // send to analytics engine
-  await sendToAnalyticsEngine(env, report)
+  await sendToAnalyticsEngine(env, reportRows)
+  await storeInD1(env, reportRows)
 }
 
 async function getDMARCReportXML(attachment: Attachment) {
   let xml
   const xmlParser = new XMLParser()
+
   const extension = mimeDb[attachment.mimeType]?.extensions?.[0] || ''
 
   switch (extension) {
@@ -78,27 +70,25 @@ async function getDMARCReportXML(attachment: Attachment) {
       throw new Error(`unknown extension: ${extension}`)
   }
 
-  return await xmlParser.parse(xml)
+  return xmlParser.parse(xml)
 }
 
-async function getXMLFromZip(content: string | ArrayBuffer | Blob | unzipit.TypedArray | unzipit.Reader) {
+async function getXMLFromZip(content: any) {
   const { entries } = await unzipit.unzipRaw(content)
+
   if (entries.length === 0) {
-    return new Error('no entries in zip')
+    throw new Error('zip file empty')
   }
 
   return await entries[0].text()
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getReportRows(report: any): DmarcRecordRow[] {
   const reportMetadata = report.feedback.report_metadata
   const policyPublished = report.feedback.policy_published
-  const records = Array.isArray(report.feedback.record) ? report.feedback.record : [report.feedback.record]
-
-  if (!report.feedback || !reportMetadata || !policyPublished || !records) {
-    throw new Error('invalid xml')
-  }
+  const records = Array.isArray(report.feedback.record)
+    ? report.feedback.record
+    : [report.feedback.record]
 
   const listEvents: DmarcRecordRow[] = []
 
@@ -120,15 +110,21 @@ function getReportRows(report: any): DmarcRecordRow[] {
       policyPublishedPct: parseInt(policyPublished.pct) || 0,
 
       recordRowSourceIP: record.row.source_ip || '',
-
       recordRowCount: parseInt(record.row.count) || 0,
-      recordRowPolicyEvaluatedDKIM: DMARCResultType[record.row.policy_evaluated.dkim as keyof typeof DMARCResultType],
-      recordRowPolicyEvaluatedSPF: DMARCResultType[record.row.policy_evaluated.spf as keyof typeof DMARCResultType],
+      recordRowPolicyEvaluatedDKIM:
+        DMARCResultType[record.row.policy_evaluated.dkim as keyof typeof DMARCResultType],
+      recordRowPolicyEvaluatedSPF:
+        DMARCResultType[record.row.policy_evaluated.spf as keyof typeof DMARCResultType],
       recordRowPolicyEvaluatedDisposition:
-        DispositionType[record.row.policy_evaluated.disposition as keyof typeof DispositionType],
+        DispositionType[
+          record.row.policy_evaluated.disposition as keyof typeof DispositionType
+        ],
 
       recordRowPolicyEvaluatedReasonType:
-        PolicyOverrideType[record.row.policy_evaluated?.reason?.type as keyof typeof PolicyOverrideType],
+        PolicyOverrideType[
+          record.row.policy_evaluated?.reason?.type as keyof typeof PolicyOverrideType
+        ],
+
       recordIdentifiersEnvelopeTo: record.identifiers.envelope_to || '',
       recordIdentifiersHeaderFrom: record.identifiers.header_from || '',
     }
@@ -140,16 +136,14 @@ function getReportRows(report: any): DmarcRecordRow[] {
 }
 
 async function sendToAnalyticsEngine(env: Env, reportRows: DmarcRecordRow[]) {
-  if (!env.DMARC_ANALYTICS) {
-    return
-  }
+  if (!env.DMARC_ANALYTICS) return
 
   reportRows.forEach((recordRow, index) => {
     const blobs: string[] = []
     const doubles: number[] = []
     const indexes: string[] = []
 
-    indexes.push(encodeURI(`${recordRow.reportMetadataReportId}-${index}`).slice(0, 32)) // max size 32 bytes
+    indexes.push(encodeURI(`${recordRow.reportMetadataReportId}-${index}`).slice(0, 32))
 
     blobs.push(recordRow.reportMetadataReportId)
     blobs.push(recordRow.reportMetadataOrgName)
@@ -170,13 +164,57 @@ async function sendToAnalyticsEngine(env: Env, reportRows: DmarcRecordRow[]) {
     doubles.push(recordRow.recordRowPolicyEvaluatedSPF)
     doubles.push(recordRow.recordRowPolicyEvaluatedDisposition)
     doubles.push(recordRow.recordRowPolicyEvaluatedReasonType)
+
     blobs.push(recordRow.recordIdentifiersEnvelopeTo)
     blobs.push(recordRow.recordIdentifiersHeaderFrom)
 
     env.DMARC_ANALYTICS.writeDataPoint({
-      blobs: blobs,
-      doubles: doubles,
-      indexes: indexes,
+      blobs,
+      doubles,
+      indexes,
     })
   })
+}
+
+async function storeInD1(env: Env, reportRows: DmarcRecordRow[]) {
+  if (!env.DB) return
+
+  const now = Date.now()
+
+  for (const row of reportRows) {
+    await env.DB.prepare(`
+      INSERT INTO dmarc_records (
+        report_id,
+        org_name,
+        domain,
+        source_ip,
+        count,
+        spf,
+        dkim,
+        disposition,
+        envelope_to,
+        header_from,
+        date_begin,
+        date_end,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+      .bind(
+        row.reportMetadataReportId,
+        row.reportMetadataOrgName,
+        row.policyPublishedDomain,
+        row.recordRowSourceIP,
+        row.recordRowCount,
+        row.recordRowPolicyEvaluatedSPF,
+        row.recordRowPolicyEvaluatedDKIM,
+        row.recordRowPolicyEvaluatedDisposition,
+        row.recordIdentifiersEnvelopeTo,
+        row.recordIdentifiersHeaderFrom,
+        row.reportMetadataDateRangeBegin,
+        row.reportMetadataDateRangeEnd,
+        now
+      )
+      .run()
+  }
 }
