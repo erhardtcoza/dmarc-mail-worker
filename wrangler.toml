@@ -2,7 +2,6 @@ name = "dmarc-mail-worker"
 main = "src/index.ts"
 compatibility_date = "2023-03-16"
 
-
 [[r2_buckets]]
 binding = "R2_BUCKET"
 bucket_name = "dmarc-reports-open"         # Set this to your R2 bucket name. Required
@@ -17,8 +16,8 @@ database_id = "a361bbea-4832-4bec-a391-c77d274fee4b"
 binding = "DMARC_ANALYTICS"
 dataset = "dmarc_reports"
 
-[observability]
-[observability.logs]
+[[observability]]
+[[observability.logs]]
 enabled = true
 invocation_logs = true
 persist = false
