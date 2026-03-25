@@ -8,10 +8,15 @@ binding = "R2_BUCKET"
 bucket_name = "dmarc-reports-open"         # Set this to your R2 bucket name. Required
 preview_bucket_name = "dmarc-reports-open" # Set this to your preview R2 bucket name. Can be equal to bucket_name. Optional
 
+[[d1_databases]]
+binding = "DB"
+database_name = "dmarc"
+database_id = "a361bbea-4832-4bec-a391-c77d274fee4b"
 
 [[analytics_engine_datasets]]
 binding = "DMARC_ANALYTICS"
 dataset = "dmarc_reports"
+
 [observability]
 [observability.logs]
 enabled = true
