@@ -15,7 +15,7 @@ PolicyOverrideType,
 } from "./types"
 
 export default {
-async email(message: EmailMessage, env: Env, ctx: ExecutionContext) {
+async email(message: EmailMessage, env: Env) {
 await handleEmail(message, env)
 },
 }
@@ -25,28 +25,56 @@ async function handleEmail(message: EmailMessage, env: Env) {
 const parser = new PostalMime.default()
 
 const rawEmail = new Response(message.raw)
+
 const email = await parser.parse(await rawEmail.arrayBuffer())
 
 if (!email.attachments || email.attachments.length === 0) {
-throw new Error("No DMARC attachments found")
+console.log("No attachments in email")
+return
 }
 
-const attachment = email.attachments[0]
+for (const attachment of email.attachments) {
+
+try {
+
+if (!attachment.filename) continue
+
+if (
+!attachment.filename.includes("xml") &&
+!attachment.filename.includes("zip") &&
+!attachment.filename.includes("gz")
+) {
+continue
+}
+
+console.log("Processing DMARC attachment:", attachment.filename)
 
 if (env.R2_BUCKET) {
+
 const date = new Date()
 
 await env.R2_BUCKET.put(
 `${date.getUTCFullYear()}/${date.getUTCMonth()+1}/${attachment.filename}`,
 attachment.content
 )
+
 }
 
 const reportJSON = await getDMARCReportXML(attachment)
-const reportRows = getReportRows(reportJSON)
 
-await sendToAnalyticsEngine(env, reportRows)
-await storeInD1(env, reportRows)
+const rows = getReportRows(reportJSON)
+
+await sendToAnalyticsEngine(env, rows)
+
+await storeInD1(env, rows)
+
+} catch (err) {
+
+console.log("Attachment skipped:", attachment.filename)
+
+}
+
+}
 
 }
 
@@ -66,31 +94,32 @@ switch (extension) {
 
 case "gz":
 
-try{
 xml = pako.ungzip(new Uint8Array(buffer), { to: "string" })
-}catch(e){
-throw new Error("Failed to decompress GZIP DMARC report")
-}
 
 break
 
 case "zip":
 
 xml = await extractZipXML(buffer)
+
 break
 
 case "xml":
 
 xml = new TextDecoder().decode(buffer)
+
 break
 
 default:
 
-// fallback attempt
-try{
+try {
+
 xml = pako.ungzip(new Uint8Array(buffer), { to: "string" })
-}catch{
+
+} catch {
+
 xml = new TextDecoder().decode(buffer)
+
 }
 
 }
@@ -106,7 +135,7 @@ const { entries } = await unzipit.unzip(buffer)
 const files = Object.values(entries)
 
 if (!files.length) {
-throw new Error("ZIP DMARC report contained no files")
+throw new Error("ZIP file empty")
 }
 
 const file = files[0]
