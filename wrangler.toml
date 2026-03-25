@@ -16,8 +16,5 @@ database_id = "a361bbea-4832-4bec-a391-c77d274fee4b"
 binding = "DMARC_ANALYTICS"
 dataset = "dmarc_reports"
 
-[[observability]]
-[[observability.logs]]
+[observability]
 enabled = true
-invocation_logs = true
-persist = false
