@@ -17,4 +17,7 @@ binding = "DMARC_ANALYTICS"
 dataset = "dmarc_reports"
 
 [observability]
+[observability.logs]
 enabled = true
+invocation_logs = true
+persist = false
